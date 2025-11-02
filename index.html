@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Connected Components Visualizer — Single File (Dark, No Random)</title>
+<style>
+  :root{
+    --bg:#071124; --panel:#071a2a; --accent:#60a5fa; --muted:#9fb0c8; --card: rgba(255,255,255,0.03);
+  }
+  html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Helvetica,Arial;background:linear-gradient(180deg,#071124,#041024);color:#e6eef8}
+  .wrap{display:grid;grid-template-columns:380px 1fr;gap:14px;padding:14px;height:100vh;box-sizing:border-box}
+  .panel{background:var(--card);border-radius:12px;padding:12px;box-shadow:0 8px 30px rgba(0,0,0,0.6);overflow:auto}
+  h1{margin:0 0 6px;font-size:18px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+  button{background:var(--accent);border:none;color:#062036;padding:8px 10px;border-radius:8px;font-weight:700;cursor:pointer}
+  button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+  label.mode{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,0.02);cursor:pointer}
+  textarea{width:100%;height:120px;background:transparent;border:1px dashed rgba(255,255,255,0.04);padding:8px;border-radius:8px;color:inherit;box-sizing:border-box;resize:vertical}
+  .info{font-size:13px;color:var(--muted);margin-top:8px}
+  .canvas-wrap{position:relative;border-radius:12px;overflow:hidden;min-height:0}
+  #svgRoot{width:100%;height:100%;display:block}
+  .hud{position:absolute;right:12px;top:12px;background:rgba(2,6,23,0.55);padding:8px;border-radius:8px;font-size:13px;color:var(--muted)}
+  .legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .chip{display:flex;align-items:center;gap:8px;padding:6px;border-radius:8px;background:rgba(255,255,255,0.02)}
+  .small{font-size:13px;color:var(--muted)}
+  .side-row{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  .panel .title{display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .panel .title .subtitle{font-size:13px;color:var(--muted)}
+  .queue-stack{margin-top:10px;background:rgba(255,255,255,0.02);padding:8px;border-radius:8px;font-family:monospace;color:#dbeafe}
+  .footer{font-size:12px;color:var(--muted);margin-top:8px}
+  .note{font-size:12px;color:#cfe8ff;margin-top:8px}
+  @media (max-width:900px){ .wrap{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <aside class="panel" style="min-width:320px">
+      <div class="title">
+        <div>
+          <h1>Connected Components — Visualizer</h1>
+          <div class="subtitle">Dark • No Random • Robust parser</div>
+        </div>
+        <div class="small">Auto-draw + animated traversal</div>
+      </div>
+
+      <div class="controls" style="margin-top:12px">
+        <button id="btnDFS">Run DFS</button>
+        <button id="btnBFS">Run BFS</button>
+        <button id="animDFS" class="ghost">Animate DFS</button>
+        <button id="animBFS" class="ghost">Animate BFS</button>
+        <button id="exportPNG" class="ghost">Export PNG</button>
+      </div>
+
+      <div class="side-row">
+        <label class="mode"><input id="undirected" type="checkbox" checked> Undirected</label>
+        <div class="small" id="compCount">Components: 0</div>
+      </div>
+
+      <div style="margin-top:10px">
+        <strong>Adjacency list (auto-draw)</strong>
+        <div class="info">One node per line. Example: <code>A: B C</code>. Paste as plain text if copying from Word/WhatsApp (Ctrl+Shift+V).</div>
+        <textarea id="adj" placeholder="A: B C\nB: A D\nC: A\nD: B"></textarea>
+        <div class="side-row" style="margin-top:8px">
+          <button id="load">Load & Draw</button>
+          <button id="clear" class="ghost">Clear</button>
+        </div>
+      </div>
+
+      <div class="legend" id="legend"></div>
+
+      <div style="margin-top:12px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="playPause" class="ghost">Play</button>
+          <button id="step" class="ghost">Step</button>
+          <button id="reset" class="ghost">Reset</button>
+          <label style="display:flex;align-items:center;gap:6px;margin-left:6px">
+            <span class="small">Speed (higher = faster)</span>
+            <input id="speed" type="range" min="1" max="10" value="5" style="width:140px">
+          </label>
+        </div>
+
+        <div class="queue-stack" id="structureDisplay">Structure: idle</div>
+        <div class="note">Tip: Use Animate DFS/BFS then Play. Use Step to move one step at a time.</div>
+      </div>
+    </aside>
+
+    <main class="panel canvas-wrap" id="canvasPanel" style="display:flex;flex-direction:column">
+      <svg id="svgRoot" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="hud" id="statusHUD">Status: Idle</div>
+    </main>
+  </div>
+
+<script>
+/* Single-file visualizer (dark) - No Random button
+   Features:
+   - Robust parser (handles non-breaking spaces/tabs/commas)
+   - Auto-draw from adjacency list
+   - Force-directed layout, node drag, click-to-add nodes/edges
+   - DFS/BFS instant & animated, play/pause/step/reset
+   - Speed slider: higher value => faster traversal
+   - Component count and legend
+   - Export PNG
+*/
+
+// Elements
+const svg = document.getElementById('svgRoot');
+const adjTextarea = document.getElementById('adj');
+const loadBtn = document.getElementById('load');
+const clearBtn = document.getElementById('clear');
+const btnDFS = document.getElementById('btnDFS');
+const btnBFS = document.getElementById('btnBFS');
+const animDFS = document.getElementById('animDFS');
+const animBFS = document.getElementById('animBFS');
+const exportPNG = document.getElementById('exportPNG');
+const legendDiv = document.getElementById('legend');
+const statusHUD = document.getElementById('statusHUD');
+const structureDisplay = document.getElementById('structureDisplay');
+const playPause = document.getElementById('playPause');
+const stepBtn = document.getElementById('step');
+const resetBtn = document.getElementById('reset');
+const speedSlider = document.getElementById('speed');
+const undirectedCheckbox = document.getElementById('undirected');
+const compCount = document.getElementById('compCount');
+
+let DPR = Math.max(1, window.devicePixelRatio || 1);
+let width=800, height=600;
+function resizeSVG(){ const r = svg.getBoundingClientRect(); width = r.width; height = r.height; }
+window.addEventListener('resize', ()=> resizeSVG());
+setTimeout(resizeSVG,50);
+
+// Graph structures
+let nodes = []; // {id,x,y,vx,vy,r,color,comp,visited,order}
+let edges = []; // {a,b}
+let adj = {};   // id -> Set
+let comps = [];
+
+// Simulation
+let simRunning=false, simFrame=null;
+
+// Animation
+let animQueue = [], animIndex=0, animPlaying=false, animTimer=null;
+let globalOrder = 0;
+let animDelay = 1000 / Number(speedSlider.value); // ms
+speedSlider.addEventListener('input', ()=> { animDelay = 1000 / Number(speedSlider.value); });
+
+// Robust normalization of whitespace and separators
+function normalizeSpaces(s){
+  if(!s) return '';
+  return s.replace(/[\u00A0\u2007\u202F\uFEFF\t]+/g,' ')
+          .replace(/[;,]+/g,' ')
+          .replace(/\s+/g,' ')
+          .trim();
+}
+
+// Parse adjacency text into adj map, nodes, edges
+function parseAdjText(text){
+  nodes = []; edges = []; adj = {};
+  const lines = text.split(/\r?\n/);
+  for(let raw of lines){
+    if(!raw) continue;
+    raw = raw.replace(/^\uFEFF/,'').trim();
+    if(!raw) continue;
+    if(/^example[:\s]/i.test(raw)) continue;
+    let left='', right='';
+    if(raw.includes(':')){
+      const parts = raw.split(':'); left = parts.shift(); right = parts.join(':');
+    } else {
+      const parts = raw.split(/\s+/); left = parts.shift(); right = parts.join(' ');
+    }
+    left = normalizeSpaces(left);
+    if(!left) continue;
+    if(!adj[left]) adj[left] = new Set();
+    right = normalizeSpaces(right);
+    if(right){
+      const neigh = right.split(' ').map(s=>normalizeSpaces(s)).filter(Boolean);
+      neigh.forEach(nb => {
+        if(!adj[nb]) adj[nb] = new Set();
+        adj[left].add(nb);
+        if(undirectedCheckbox.checked) adj[nb].add(left);
+      });
+    }
+  }
+  // ensure nodes that appear only as neighbors are present
+  Object.keys(adj).forEach(k => { if(!adj[k]) adj[k] = new Set(); });
+  // create node objects with initial circular layout
+  const keys = Object.keys(adj).sort();
+  const cx = (width||800)/2, cy = (height||600)/2;
+  const radius = Math.min(240, Math.max(80, keys.length * 12));
+  nodes = keys.map((k,i) => ({
+    id: k,
+    x: cx + Math.cos(i*2*Math.PI/Math.max(1,keys.length)) * (radius*(0.7 + Math.random()*0.5)),
+    y: cy + Math.sin(i*2*Math.PI/Math.max(1,keys.length)) * (radius*(0.5 + Math.random()*0.5)),
+    vx:0, vy:0, r:22, color:null, comp:-1, visited:false, order:-1
+  }));
+  // edges
+  edges = [];
+  keys.forEach(a => {
+    adj[a].forEach(b => {
+      if(undirectedCheckbox.checked){
+        if(a < b) edges.push({a,b});
+      } else {
+        edges.push({a,b});
+      }
+    });
+  });
+  return {nodes, edges, adj};
+}
+
+// SVG drawing
+function clearSVG(){ while(svg.firstChild) svg.removeChild(svg.firstChild); }
+function drawGraph(){
+  resizeSVG();
+  clearSVG();
+  const eg = document.createElementNS('http://www.w3.org/2000/svg','g'); eg.id='edges'; svg.appendChild(eg);
+  const ng = document.createElementNS('http://www.w3.org/2000/svg','g'); ng.id='nodes'; svg.appendChild(ng);
+
+  edges.forEach(e=>{
+    const a = nodes.find(n=>n.id===e.a), b = nodes.find(n=>n.id===e.b);
+    if(!a||!b) return;
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+    line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+    line.setAttribute('stroke', 'rgba(255,255,255,0.12)'); line.setAttribute('stroke-width','2');
+    line.dataset.a = e.a; line.dataset.b = e.b;
+    eg.appendChild(line);
+  });
+
+  nodes.forEach(n=>{
+    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+    g.classList.add('node'); g.dataset.id = n.id;
+    // circle
+    const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    c.setAttribute('cx', n.x); c.setAttribute('cy', n.y); c.setAttribute('r', n.r);
+    c.setAttribute('fill', n.color || 'rgba(255,255,255,0.02)');
+    c.setAttribute('stroke','rgba(255,255,255,0.18)'); c.setAttribute('stroke-width','2');
+    g.appendChild(c);
+    // label
+    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+    t.setAttribute('x', n.x); t.setAttribute('y', n.y+1); t.setAttribute('text-anchor','middle');
+    t.setAttribute('dominant-baseline','middle'); t.setAttribute('font-weight','700'); t.setAttribute('font-size','14px'); t.textContent = n.id;
+    g.appendChild(t);
+    // order badge
+    const badge = document.createElementNS('http://www.w3.org/2000/svg','text');
+    badge.classList.add('badge'); badge.setAttribute('x', n.x - n.r - 14); badge.setAttribute('y', n.y - n.r - 4);
+    badge.setAttribute('font-size','12px'); badge.setAttribute('fill','#dbeafe'); badge.textContent = n.order > 0 ? n.order : '';
+    g.appendChild(badge);
+
+    // dragging
+    let dragging=false, off={x:0,y:0};
+    g.addEventListener('mousedown', ev=>{ dragging=true; off.x = ev.clientX - n.x; off.y = ev.clientY - n.y; ev.stopPropagation(); });
+    window.addEventListener('mousemove', ev=>{ if(!dragging) return; n.x = ev.clientX - off.x; n.y = ev.clientY - off.y; updatePositions(); });
+    window.addEventListener('mouseup', ()=> dragging=false);
+
+    ng.appendChild(g);
+  });
+
+  updatePositions();
+  updateLegend();
+}
+
+// update lines and nodes positions
+function updatePositions(){
+  const lines = svg.querySelectorAll('#edges line');
+  lines.forEach(line=>{
+    const aId = line.dataset.a, bId = line.dataset.b;
+    const a = nodes.find(n=>n.id===aId), b = nodes.find(n=>n.id===bId);
+    if(!a||!b) return;
+    line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+    line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+  });
+  const nlist = svg.querySelectorAll('#nodes g.node');
+  nlist.forEach(g=>{
+    const id = g.dataset.id; const n = nodes.find(x=>x.id===id); if(!n) return;
+    const c = g.querySelector('circle'); const t = g.querySelector('text'); const b = g.querySelector('.badge');
+    c.setAttribute('cx', n.x); c.setAttribute('cy', n.y);
+    t.setAttribute('x', n.x); t.setAttribute('y', n.y+1);
+    if(b){ b.setAttribute('x', n.x - n.r - 14); b.setAttribute('y', n.y - n.r - 4); b.textContent = n.order > 0 ? n.order : ''; }
+    c.setAttribute('fill', n.color || 'rgba(255,255,255,0.02)');
+  });
+}
+
+// simple force simulation
+function startSimulation(){
+  if(simRunning) return; simRunning = true;
+  function tick(){
+    const kRepel = 12000;
+    for(let i=0;i<nodes.length;i++){
+      let fx=0, fy=0;
+      for(let j=0;j<nodes.length;j++){
+        if(i===j) continue;
+        let dx = nodes[i].x - nodes[j].x, dy = nodes[i].y - nodes[j].y;
+        let d2 = dx*dx + dy*dy + 0.01;
+        let f = kRepel / d2;
+        fx += dx * f; fy += dy * f;
+      }
+      nodes[i].vx = (nodes[i].vx + fx*0.0009); nodes[i].vy = (nodes[i].vy + fy*0.0009);
+    }
+    const kSpring = 0.02, restLen = 140;
+    edges.forEach(e=>{
+      const a = nodes.find(n=>n.id===e.a), b = nodes.find(n=>n.id===e.b);
+      if(!a||!b) return;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let dist = Math.sqrt(dx*dx + dy*dy) + 0.01;
+      let diff = dist - restLen;
+      let fx = kSpring * diff * (dx / dist), fy = kSpring * diff * (dy / dist);
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    });
+    for(const n of nodes){
+      n.vx *= 0.86; n.vy *= 0.86;
+      n.x += n.vx; n.y += n.vy;
+      n.x = Math.max(40, Math.min((width||800)-40, n.x));
+      n.y = Math.max(40, Math.min((height||600)-40, n.y));
+    }
+    updatePositions();
+    simFrame = requestAnimationFrame(tick);
+  }
+  tick();
+}
+function stopSimulation(){ simRunning=false; if(simFrame) cancelAnimationFrame(simFrame); }
+
+// compute connected components
+function computeComponents(){
+  comps = []; const visited = new Set();
+  Object.keys(adj).sort().forEach(s=>{
+    if(visited.has(s)) return;
+    const comp = [];
+    (function dfs(u){ visited.add(u); comp.push(u); adj[u].forEach(v=>{ if(!visited.has(v)) dfs(v); }); })(s);
+    comps.push(comp);
+  });
+  comps.forEach((comp, idx) => {
+    const col = compColor(idx, comps.length);
+    comp.forEach(id => { const n = nodes.find(x=>x.id===id); if(n){ n.comp = idx; n.color = col; } });
+  });
+  compCount.textContent = `Components: ${comps.length}`;
+  updateLegend();
+}
+
+function compColor(i, total){ const hue = Math.round((i*360/Math.max(1,total))%360); return `hsl(${hue} 78% 52%)`; }
+
+function updateLegend(){
+  legendDiv.innerHTML = '';
+  if(comps.length === 0){ legendDiv.textContent = 'No components yet'; return; }
+  comps.forEach((comp,i)=>{
+    const chip = document.createElement('div'); chip.className='chip';
+    const sw = document.createElement('div'); sw.style.width='14px'; sw.style.height='14px'; sw.style.borderRadius='4px'; sw.style.background=compColor(i,comps.length);
+    const lbl = document.createElement('div'); lbl.style.fontSize='13px'; lbl.textContent=`C${i+1} (${comp.length})`;
+    chip.appendChild(sw); chip.appendChild(lbl); legendDiv.appendChild(chip);
+  });
+}
+
+// load & draw
+function loadAndDraw(){
+  try{
+    const res = parseAdjText(adjTextarea.value || '');
+    computeComponents();
+    drawGraph();
+    startSimulation();
+    statusHUD.textContent = `Loaded ${nodes.length} nodes, ${edges.length} edges, ${comps.length} components`;
+  } catch(err){
+    statusHUD.textContent = 'Parse error';
+    console.error(err);
+  }
+}
+
+// export PNG
+function exportSVGtoPNG(){
+  const ser = new XMLSerializer();
+  const clone = svg.cloneNode(true);
+  const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  rect.setAttribute('width','100%'); rect.setAttribute('height','100%'); rect.setAttribute('fill','#071124');
+  clone.insertBefore(rect, clone.firstChild);
+  const svgStr = ser.serializeToString(clone);
+  const url = URL.createObjectURL(new Blob([svgStr], {type:'image/svg+xml;charset=utf-8'}));
+  const img = new Image();
+  img.onload = ()=>{
+    const c = document.createElement('canvas'); c.width = (width||800)*DPR; c.height = (height||600)*DPR;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#071124'; ctx.fillRect(0,0,c.width,c.height); ctx.scale(DPR,DPR);
+    ctx.drawImage(img,0,0); URL.revokeObjectURL(url);
+    const a = document.createElement('a'); a.href = c.toDataURL('image/png'); a.download = 'graph.png'; a.click();
+  };
+  img.src = url;
+}
+
+// build animation queue
+function buildTraversal(type){
+  animQueue = []; animIndex = 0;
+  const visited = new Set();
+  const keys = Object.keys(adj).sort();
+  for(const s of keys){
+    if(visited.has(s)) continue;
+    // collect this component
+    const compNodes = [];
+    (function collect(u){ visited.add(u); compNodes.push(u); adj[u].forEach(v=>{ if(!visited.has(v)) collect(v); }); })(s);
+    animQueue.push({type:'component', nodes: compNodes.slice()});
+    if(type === 'dfs'){
+      const localSeen = new Set();
+      (function dfs(u){
+        localSeen.add(u);
+        animQueue.push({type:'visit', id:u});
+        adj[u].forEach(v => { if(!localSeen.has(v)) dfs(v); });
+      })(s);
+    } else {
+      const q = [s]; const localSeen = new Set([s]);
+      while(q.length){
+        const u = q.shift(); animQueue.push({type:'visit', id:u});
+        adj[u].forEach(v => { if(!localSeen.has(v)){ localSeen.add(v); q.push(v); }});
+      }
+    }
+  }
+  statusHUD.textContent = `Animation ready (${animQueue.length} steps)`;
+}
+
+// apply step
+function applyStep(step){
+  if(!step) return;
+  if(step.type === 'component'){
+    structureDisplay.textContent = `Component: ${step.nodes.join(', ')}`;
+  } else if(step.type === 'visit'){
+    const n = nodes.find(x => x.id === step.id);
+    if(n){ n.visited = true; n.order = ++globalOrder; structureDisplay.textContent = `Visited: ${n.id}`; }
+  }
+  updatePositions();
+}
+
+// playback
+function playAnimation(){
+  if(animPlaying) return;
+  animPlaying = true; playPause.textContent = 'Pause';
+  function tick(){
+    if(animIndex >= animQueue.length){ animPlaying=false; playPause.textContent='Play'; statusHUD.textContent='Animation completed'; return; }
+    const step = animQueue[animIndex++]; applyStep(step);
+    animTimer = setTimeout(()=>{ if(animPlaying) requestAnimationFrame(tick); }, animDelay);
+  }
+  requestAnimationFrame(tick);
+}
+function pauseAnimation(){ animPlaying=false; playPause.textContent='Play'; clearTimeout(animTimer); statusHUD.textContent='Paused'; }
+function stepAnimation(){ if(animIndex >= animQueue.length){ statusHUD.textContent='Finished'; return; } const step = animQueue[animIndex++]; applyStep(step); }
+function resetAnimation(){ animIndex=0; animQueue=[]; animPlaying=false; playPause.textContent='Play'; nodes.forEach(n=>{ n.visited=false; n.order=-1; }); globalOrder=0; structureDisplay.textContent='Structure: idle'; statusHUD.textContent='Reset'; updatePositions(); }
+
+// click-to-add node / add-edge
+let currentMode = 'add'; // 'add' or 'edge' or 'move' or 'delete'
+let selectedEdgeNode = null;
+let lastClickPos = null;
+svg.addEventListener('click', (ev) => {
+  const p = getMousePosSVG(ev);
+  // adding node on click
+  if(currentMode === 'add'){
+    // create unique single-letter or N# id
+    let id = generateNodeId();
+    nodes.push({id, x:p.x, y:p.y, vx:0, vy:0, r:22, color:null, comp:-1, visited:false, order:-1});
+    // ensure adj entry
+    if(!adj[id]) adj[id] = new Set();
+    computeComponents(); drawGraph(); startSimulation();
+    return;
+  } else if(currentMode === 'edge'){
+    // find node clicked
+    const n = findNodeAt(p.x,p.y);
+    if(n){
+      if(!selectedEdgeNode) selectedEdgeNode = n;
+      else {
+        // add edge between selectedEdgeNode and n
+        const a = selectedEdgeNode.id, b = n.id;
+        if(a !== b){
+          // prevent duplicate
+          const exists = edges.some(e=> (e.a===a && e.b===b) || (e.a===b && e.b===a));
+          if(!exists){
+            if(undirectedCheckbox.checked){
+              if(a < b) edges.push({a,b}); else edges.push({a,b: a, a: b}); // ensure some insertion; we'll normalize later by reconstructing edges from adj
+            } else edges.push({a,b});
+            if(!adj[a]) adj[a]= new Set();
+            if(!adj[b]) adj[b]= new Set();
+            adj[a].add(b);
+            if(undirectedCheckbox.checked) adj[b].add(a);
+            computeComponents(); drawGraph(); startSimulation();
+          }
+        }
+        selectedEdgeNode = null;
+      }
+    } else {
+      selectedEdgeNode = null;
+    }
+  }
+});
+
+// helpers to get SVG mouse pos
+function getMousePosSVG(evt){
+  const rect = svg.getBoundingClientRect();
+  const cssX = evt.clientX - rect.left;
+  const cssY = evt.clientY - rect.top;
+  return { x: cssX, y: cssY };
+}
+function findNodeAt(x,y){
+  return nodes.find(n=> Math.hypot(n.x - x, n.y - y) <= n.r + 6 );
+}
+function generateNodeId(){
+  const used = new Set(nodes.map(n=>n.id).concat(Object.keys(adj)));
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  for(let i=0;i<letters.length;i++) if(!used.has(letters[i])) return letters[i];
+  let i=1; while(used.has('N'+i)) i++; return 'N'+i;
+}
+
+// UI bindings
+loadBtn.addEventListener('click', loadAndDraw);
+clearBtn.addEventListener('click', ()=>{ nodes=[]; edges=[]; adj={}; comps=[]; clearSVG(); legendDiv.innerHTML=''; statusHUD.textContent='Cleared'; stopSimulation(); compCount.textContent='Components: 0'; });
+btnDFS.addEventListener('click', ()=>{ computeComponents(); globalOrder=0; const visited = new Set(); Object.keys(adj).sort().forEach(s=>{ if(visited.has(s)) return; (function dfs(u){ visited.add(u); const n = nodes.find(x=>x.id===u); if(n){ n.visited=true; n.order = ++globalOrder; } adj[u].forEach(v=>{ if(!visited.has(v)) dfs(v); }); })(s); }); updatePositions(); statusHUD.textContent='DFS (instant) completed'; });
+btnBFS.addEventListener('click', ()=>{ computeComponents(); globalOrder=0; const visited = new Set(); Object.keys(adj).sort().forEach(s=>{ if(visited.has(s)) return; const q=[s]; visited.add(s); while(q.length){ const u=q.shift(); const n = nodes.find(x=>x.id===u); if(n){ n.visited=true; n.order = ++globalOrder; } adj[u].forEach(v=>{ if(!visited.has(v)){ visited.add(v); q.push(v); } }); } }); updatePositions(); statusHUD.textContent='BFS (instant) completed'; });
+animDFS.addEventListener('click', ()=>{ resetAnimation(); buildTraversal('dfs'); playAnimation(); });
+animBFS.addEventListener('click', ()=>{ resetAnimation(); buildTraversal('bfs'); playAnimation(); });
+playPause.addEventListener('click', ()=>{ if(animPlaying) pauseAnimation(); else playAnimation(); });
+stepBtn.addEventListener('click', ()=> stepAnimation());
+resetBtn.addEventListener('click', ()=> resetAnimation());
+exportPNG.addEventListener('click', exportSVGtoPNG);
+
+// mode toggle via double click on legend area (quick small UI)
+let modeIndex = 0; const modes = ['add','edge','move','delete'];
+document.addEventListener('keydown', (e)=> {
+  if(e.key === '1') { currentMode = 'add'; statusHUD.textContent='Mode: Add node'; }
+  if(e.key === '2') { currentMode = 'edge'; statusHUD.textContent='Mode: Add edge'; selectedEdgeNode = null; }
+  if(e.key === '3') { currentMode = 'move'; statusHUD.textContent='Mode: Move node'; }
+  if(e.key === '4') { currentMode = 'delete'; statusHUD.textContent='Mode: Delete node'; }
+});
+svg.addEventListener('dblclick', (e)=>{ // double click to delete node under cursor
+  if(currentMode === 'delete'){
+    const p = getMousePosSVG(e); const n = findNodeAt(p.x,p.y);
+    if(n){ // remove node
+      nodes = nodes.filter(x=>x.id!==n.id);
+      edges = edges.filter(e=> e.a !== n.id && e.b !== n.id);
+      delete adj[n.id];
+      Object.keys(adj).forEach(k=>adj[k].delete(n.id));
+      computeComponents(); drawGraph();
+    }
+  }
+});
+
+// initial sample
+adjTextarea.value = `A: B C
+B: A D
+C: A E
+D: B
+E: C`;
+
+// auto-load at start
+setTimeout(()=>{ loadAndDraw(); }, 80);
+
+// small UX tips shown in console
+console.log('Visualizer loaded. Keys: 1=Add node mode, 2=Add edge mode, 3=Move, 4=Delete. Double-click to delete node when in delete mode.');
+
+</script>
+</body>
+</html>
